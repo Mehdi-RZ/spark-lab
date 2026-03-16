@@ -1,0 +1,547 @@
+# yaml-language-server: $schema=https://taskfile.dev/schema.json
+
+version: '3'
+
+output: prefixed
+silent: false
+
+vars:
+  PROJECT_NAME: spark-lab
+  COMPOSE_FILE: docker/docker-compose.yml
+  COMPOSE_SINGLE_FILE: docker/docker-compose.single.yml
+  EXAMPLES_DIR: ./examples
+  DATA_DIR: ./data
+  TESTS_DIR: ./tests
+
+env:
+  DOCKER_BUILDKIT: '1'
+  COMPOSE_DOCKER_CLI_BUILD: '1'
+
+dotenv:
+  - .env
+
+tasks:
+  # ----------------------------------------
+  # Default
+  # ----------------------------------------
+  default:
+    desc: List all available tasks
+    cmds:
+      - task --list-all
+    silent: true
+
+  # ----------------------------------------
+  # Setup
+  # ----------------------------------------
+  setup:
+    desc: One-time setup after cloning
+    deps: [setup:dirs, setup:env, setup:docker]
+    cmds:
+      - |
+        echo "Setup complete."
+        echo ""
+        echo "Next steps:"
+        echo "  task single:start"
+        echo "  task submit JOB=examples/01-fundamentals/01_hello_spark.py"
+    silent: true
+
+  setup:dirs:
+    internal: true
+    cmds:
+      - mkdir -p {{.DATA_DIR}}/{users,products,orders}/{small,medium,large}
+      - mkdir -p {{.DATA_DIR}}/warehouse logs checkpoints
+    status:
+      - test -d {{.DATA_DIR}}/users
+
+  setup:env:
+    internal: true
+    cmds:
+      - |
+        if [ ! -f .env ]; then
+          if [ -f .env.example ]; then
+            cp .env.example .env
+            echo "Created .env from .env.example"
+          else
+            echo "ERROR: .env.example not found. Create .env manually."
+            exit 1
+          fi
+        fi
+    status:
+      - test -f .env
+
+  setup:docker:
+    internal: true
+    cmds:
+      - docker compose -f {{.COMPOSE_FILE}} pull
+      - docker compose -f {{.COMPOSE_SINGLE_FILE}} pull
+
+  # ----------------------------------------
+  # Single-node mode
+  # ----------------------------------------
+  single:start:
+    desc: "Start single-node mode (Spark UI: localhost:4040, Jupyter: localhost:8888)"
+    deps: [setup:dirs]
+    cmds:
+      - docker compose -f {{.COMPOSE_SINGLE_FILE}} up -d
+      - task: single:wait
+      - |
+        echo "Single-node started."
+        echo "  Spark UI: http://localhost:4040"
+        echo "  Jupyter:  http://localhost:8888 (token: ${JUPYTER_TOKEN})"
+
+  single:stop:
+    desc: Stop single-node mode
+    cmds:
+      - docker compose -f {{.COMPOSE_SINGLE_FILE}} down
+
+  single:wait:
+    internal: true
+    cmds:
+      - |
+        echo "Waiting for Spark..."
+        timeout=30
+        while [ $timeout -gt 0 ]; do
+          if docker ps --format '{{`{{.Names}}`}}' | grep -q "spark-single"; then
+            if docker exec spark-single /opt/spark/bin/spark-submit --version > /dev/null 2>&1; then
+              echo "Spark is ready."
+              exit 0
+            fi
+          fi
+          sleep 2
+          timeout=$((timeout - 2))
+        done
+        echo "ERROR: Timed out waiting for Spark"
+        exit 1
+
+  # ----------------------------------------
+  # Cluster mode
+  # ----------------------------------------
+  cluster:start:
+    desc: "Start cluster mode (Master UI: localhost:8080, workers: 8081/8082)"
+    deps: [setup:dirs]
+    cmds:
+      - docker compose -f {{.COMPOSE_FILE}} up -d
+      - task: cluster:wait
+      - |
+        echo "Cluster started."
+        echo "  Master UI: http://localhost:8080"
+        echo "  Worker 1:  http://localhost:8081"
+        echo "  Worker 2:  http://localhost:8082"
+        echo "  Jupyter:   http://localhost:8888 (token: ${JUPYTER_TOKEN})"
+
+  cluster:stop:
+    desc: Stop cluster mode
+    cmds:
+      - docker compose -f {{.COMPOSE_FILE}} down
+
+  cluster:scale:
+    desc: "Scale worker nodes (usage: task cluster:scale WORKERS=3)"
+    vars:
+      WORKERS: '{{.WORKERS | default "2"}}'
+    cmds:
+      - docker compose -f {{.COMPOSE_FILE}} up -d --scale spark-worker={{.WORKERS}}
+      - echo "Scaled to {{.WORKERS}} workers."
+
+  cluster:wait:
+    internal: true
+    cmds:
+      - |
+        echo "Waiting for Spark Master..."
+        timeout=60
+        while [ $timeout -gt 0 ]; do
+          if curl -s http://localhost:8080/json/ 2>/dev/null | grep -q '"status":"ALIVE"'; then
+            echo "Spark Master is ready."
+            sleep 3
+            exit 0
+          fi
+          sleep 2
+          timeout=$((timeout - 2))
+        done
+        echo "ERROR: Timed out waiting for Spark Master"
+        exit 1
+
+  # ----------------------------------------
+  # Stop all
+  # ----------------------------------------
+  stop:
+    desc: Stop all services
+    cmds:
+      - docker compose -f {{.COMPOSE_SINGLE_FILE}} down 2>/dev/null || true
+      - docker compose -f {{.COMPOSE_FILE}} down 2>/dev/null || true
+      - echo "All services stopped."
+
+  # ----------------------------------------
+  # Status
+  # ----------------------------------------
+  status:
+    desc: Check running containers and cluster health
+    cmds:
+      - |
+        echo "Containers:"
+        docker ps --format 'table {{`{{.Names}}`}}\t{{`{{.Status}}`}}\t{{`{{.Ports}}`}}' 2>/dev/null \
+          | grep -E "(spark|jupyter)" || echo "  (none)"
+        echo ""
+
+        echo "Spark Master:"
+        if curl -s http://localhost:8080/json/ 2>/dev/null > /tmp/spark_status.json; then
+          python3 -c "
+        import sys, json
+        d = json.load(open('/tmp/spark_status.json'))
+        print(f\"  Status:  {d.get('status', 'Unknown')}\")
+        print(f\"  Workers: {len(d.get('workers', []))}\")
+        print(f\"  Cores:   {d.get('cores', 0)}\")
+        print(f\"  Memory:  {d.get('memory', 0)} MB\")
+        " 2>/dev/null || echo "  (could not parse response)"
+        else
+          echo "  Not responding (single-node mode has no Master UI)"
+        fi
+        echo ""
+
+        echo "Resource usage:"
+        docker stats --no-stream --format 'table {{`{{.Name}}`}}\t{{`{{.CPUPerc}}`}}\t{{`{{.MemUsage}}`}}' \
+          2>/dev/null | grep -E "(spark|jupyter)" | head -5 || echo "  (none)"
+        echo ""
+
+        echo "History Server:"
+        if docker ps --format '{{`{{.Names}}`}}' | grep -q "spark-history"; then
+          echo "  Running — http://localhost:18080"
+        else
+          echo "  Not running (task history:start)"
+        fi
+    silent: true
+
+  # ----------------------------------------
+  # Logs
+  # ----------------------------------------
+  logs:
+    desc: "View Docker service logs (SERVICE=master|worker-1|... for specific container)"
+    vars:
+      SERVICE: '{{.SERVICE | default ""}}'
+    cmds:
+      - |
+        if [ -z "{{.SERVICE}}" ]; then
+          docker compose -f {{.COMPOSE_FILE}} logs -f 2>/dev/null \
+            || docker compose -f {{.COMPOSE_SINGLE_FILE}} logs -f 2>/dev/null
+        else
+          docker logs -f spark-{{.SERVICE}} 2>/dev/null || echo "Container spark-{{.SERVICE}} not found"
+        fi
+
+  logs:app:
+    desc: "View job output logs (DATE=YYYY-MM-DD, JOB=name, LATEST=true)"
+    vars:
+      DATE: '{{.DATE | default ""}}'
+      JOB: '{{.JOB | default ""}}'
+      LATEST: '{{.LATEST | default "false"}}'
+    cmds:
+      - |
+        LOG_DIR="logs/app-logs"
+        if [ ! -d "$LOG_DIR" ]; then
+          echo "No job logs found. Run: task submit JOB=..."
+          exit 0
+        fi
+
+        if [ "{{.LATEST}}" = "true" ]; then
+          LATEST_LOG=$(find "$LOG_DIR" -name "*.log" -type f -printf '%T@ %p\n' 2>/dev/null \
+            | sort -rn | head -1 | cut -d' ' -f2-)
+          [ -n "$LATEST_LOG" ] && cat "$LATEST_LOG" || echo "No logs found"
+          exit 0
+        fi
+
+        TARGET_DATE="{{.DATE}}"
+        [ -z "$TARGET_DATE" ] && TARGET_DATE=$(date +%Y-%m-%d)
+        DATE_DIR="$LOG_DIR/$TARGET_DATE"
+        if [ ! -d "$DATE_DIR" ]; then
+          echo "No logs for $TARGET_DATE. Available dates:"
+          ls -1 "$LOG_DIR" 2>/dev/null || echo "  (none)"
+          exit 0
+        fi
+
+        if [ -n "{{.JOB}}" ]; then
+          find "$DATE_DIR" -name "*{{.JOB}}*.log" -type f | while read log; do
+            echo "=== $log ==="; cat "$log"
+          done
+        else
+          for log in "$DATE_DIR"/*.log; do
+            [ -f "$log" ] && echo "=== $(basename "$log") ===" && cat "$log" && echo ""
+          done
+        fi
+
+  logs:list:
+    desc: "List job log files (DATE=YYYY-MM-DD to filter)"
+    vars:
+      DATE: '{{.DATE | default ""}}'
+    cmds:
+      - |
+        LOG_DIR="logs/app-logs"
+        if [ ! -d "$LOG_DIR" ]; then
+          echo "No job logs found."
+          exit 0
+        fi
+
+        if [ -n "{{.DATE}}" ]; then
+          ls -lh "$LOG_DIR/{{.DATE}}"/*.log 2>/dev/null || echo "No logs for {{.DATE}}"
+        else
+          for dir in "$LOG_DIR"/*/; do
+            [ -d "$dir" ] || continue
+            count=$(find "$dir" -name "*.log" | wc -l)
+            echo "$(basename "$dir") ($count logs)"
+            ls -lh "$dir"*.log 2>/dev/null | awk '{print "  " $9 " (" $5 ")"}'
+          done
+        fi
+
+  logs:clean:
+    desc: "Remove old job logs (DAYS=30, add CONFIRM=true to apply)"
+    vars:
+      DAYS: '{{.DAYS | default "30"}}'
+      CONFIRM: '{{.CONFIRM | default "false"}}'
+    cmds:
+      - |
+        LOG_DIR="logs/app-logs"
+        OLD=$(find "$LOG_DIR" -name "*.log" -type f -mtime +{{.DAYS}} 2>/dev/null)
+        if [ -z "$OLD" ]; then
+          echo "No logs older than {{.DAYS}} days."
+          exit 0
+        fi
+        COUNT=$(echo "$OLD" | wc -l)
+        SIZE=$(echo "$OLD" | xargs du -ch 2>/dev/null | tail -1 | awk '{print $1}')
+        echo "$COUNT log(s), $SIZE older than {{.DAYS}} days."
+        if [ "{{.CONFIRM}}" = "true" ]; then
+          echo "$OLD" | xargs rm -f
+          find "$LOG_DIR" -type d -empty -delete 2>/dev/null
+          echo "Deleted $COUNT log(s)."
+        else
+          echo "Dry run — add CONFIRM=true to delete."
+          echo "$OLD" | head -20
+        fi
+
+  logs:rotate:
+    desc: "Compress old job logs (DAYS=7)"
+    vars:
+      DAYS: '{{.DAYS | default "7"}}'
+    cmds:
+      - |
+        OLD=$(find "logs/app-logs" -name "*.log" -not -name "*.gz" -type f -mtime +{{.DAYS}} 2>/dev/null)
+        if [ -z "$OLD" ]; then
+          echo "No uncompressed logs older than {{.DAYS}} days."
+          exit 0
+        fi
+        COUNT=$(echo "$OLD" | wc -l)
+        echo "$OLD" | while read log; do gzip -f "$log"; done
+        echo "Compressed $COUNT log(s)."
+
+  # ----------------------------------------
+  # Job submission
+  # ----------------------------------------
+  submit:
+    desc: "Submit a PySpark job (JOB= path relative to examples/)"
+    requires:
+      vars: [JOB]
+    preconditions:
+      - sh: test -f {{.EXAMPLES_DIR}}/{{.JOB}}
+        msg: "Job file not found: {{.EXAMPLES_DIR}}/{{.JOB}}"
+    cmds:
+      - ./scripts/submit-job.sh {{.JOB}}
+
+  # ----------------------------------------
+  # Data generation
+  # ----------------------------------------
+  generate:
+    desc: "Generate sample datasets (SIZE=very_small|small|medium|large|very_large, default: all three small sizes)"
+    vars:
+      SIZE: '{{.SIZE | default ""}}'
+    cmds:
+      - |
+        DFMT='{{`{{.Names}}`}}'
+        if ! docker ps --format "$DFMT" | grep -qE "(spark-master|spark-single)"; then
+          echo "ERROR: No Spark environment running. Run: task single:start"
+          exit 1
+        fi
+
+        run_generate() {
+          local size="$1"
+          echo "Generating: $size"
+          if docker ps --format "$DFMT" | grep -q "spark-single"; then
+            docker exec spark-single python3 /opt/spark/apps/generate_data.py --size "$size"
+          else
+            docker exec spark-master spark-submit \
+              --master spark://spark-master:7077 \
+              /opt/spark/apps/generate_data.py --size "$size"
+          fi
+        }
+
+        if [ -n "{{.SIZE}}" ]; then
+          run_generate "{{.SIZE}}"
+        else
+          run_generate very_small
+          run_generate small
+          run_generate medium
+        fi
+
+        echo "Done. Data in {{.DATA_DIR}}/"
+
+  # ----------------------------------------
+  # Testing
+  # ----------------------------------------
+  test:
+    desc: Run validation tests
+    cmds:
+      - |
+        test -f .env              || (echo "ERROR: .env missing" && exit 1)
+        test -d {{.EXAMPLES_DIR}} || (echo "ERROR: examples/ missing" && exit 1)
+        docker --version > /dev/null 2>&1 || (echo "ERROR: Docker not installed" && exit 1)
+        docker compose version > /dev/null 2>&1 || (echo "ERROR: Docker Compose not installed" && exit 1)
+
+        DFMT='{{`{{.Names}}`}}'
+        if docker ps --format "$DFMT" | grep -q "spark-single"; then
+          docker exec spark-single /opt/spark/bin/spark-submit \
+            --master "local[*]" /opt/spark/tests/validation_test.py
+        else
+          echo "ERROR: Start single-node mode first: task single:start"
+          exit 1
+        fi
+
+  test:examples:
+    desc: Run all example scripts
+    cmds:
+      - |
+        DFMT='{{`{{.Names}}`}}'
+        if ! docker ps --format "$DFMT" | grep -q "spark-single"; then
+          echo "ERROR: Start single-node mode first: task single:start"
+          exit 1
+        fi
+        for script in {{.EXAMPLES_DIR}}/*/*.py; do
+          [ -f "$script" ] || continue
+          rel="${script#./examples/}"
+          echo "Testing: $rel"
+          docker exec spark-single /opt/spark/bin/spark-submit \
+            --master "local[*]" "/opt/spark/apps/$rel" || echo "  FAILED: $rel"
+        done
+
+  # ----------------------------------------
+  # Shell
+  # ----------------------------------------
+  shell:
+    desc: "Open shell in Spark container (TYPE=worker for worker-1)"
+    vars:
+      TYPE: '{{.TYPE | default ""}}'
+    cmds:
+      - |
+        DFMT='{{`{{.Names}}`}}'
+        if [ "{{.TYPE}}" = "worker" ]; then
+          docker ps --format "$DFMT" | grep -q "spark-worker-1" \
+            && docker exec -it spark-worker-1 bash \
+            || (echo "No workers running" && exit 1)
+        elif docker ps --format "$DFMT" | grep -q "spark-single"; then
+          docker exec -it spark-single bash
+        elif docker ps --format "$DFMT" | grep -q "spark-master"; then
+          docker exec -it spark-master bash
+        else
+          echo "ERROR: No Spark container running"
+          exit 1
+        fi
+
+  # ----------------------------------------
+  # Jupyter
+  # ----------------------------------------
+  jupyter:open:
+    desc: Open Jupyter in browser
+    cmds:
+      - |
+        TOKEN="${JUPYTER_TOKEN:-spark-lab-token}"
+        URL="http://localhost:8888/?token=${TOKEN}"
+        echo "Jupyter: $URL"
+        if command -v xdg-open > /dev/null 2>&1; then xdg-open "$URL"
+        elif command -v open > /dev/null 2>&1; then open "$URL"
+        else python3 -m webbrowser "$URL" 2>/dev/null || echo "Open manually: $URL"
+        fi
+
+  # ----------------------------------------
+  # History Server
+  # ----------------------------------------
+  history:start:
+    desc: "Start Spark History Server (UI: localhost:18080)"
+    cmds:
+      - |
+        if docker ps --format '{{`{{.Names}}`}}' | grep -q "spark-history"; then
+          echo "Already running — http://localhost:18080"
+          exit 0
+        fi
+        DFMT='{{`{{.Names}}`}}'
+        if docker ps --format "$DFMT" | grep -q "spark-single"; then
+          docker compose -f {{.COMPOSE_SINGLE_FILE}} up -d spark-history
+        elif docker ps --format "$DFMT" | grep -q "spark-master"; then
+          docker compose -f {{.COMPOSE_FILE}} up -d spark-history
+        else
+          echo "ERROR: No Spark environment running. Run: task single:start"
+          exit 1
+        fi
+        echo "History Server started — http://localhost:18080"
+
+  history:stop:
+    desc: Stop Spark History Server
+    cmds:
+      - docker stop spark-history 2>/dev/null || true
+      - docker rm spark-history 2>/dev/null || true
+
+  history:open:
+    desc: Open Spark History Server in browser
+    cmds:
+      - |
+        URL="http://localhost:18080"
+        if command -v xdg-open > /dev/null 2>&1; then xdg-open "$URL"
+        elif command -v open > /dev/null 2>&1; then open "$URL"
+        else python3 -m webbrowser "$URL" 2>/dev/null || echo "Open manually: $URL"
+        fi
+
+  # ----------------------------------------
+  # Linting
+  # ----------------------------------------
+  lint:
+    desc: Check code with ruff
+    cmds:
+      - ruff check utils/ examples/ tests/
+
+  lint:fix:
+    desc: Auto-fix safe lint issues with ruff
+    cmds:
+      - ruff check --fix utils/ examples/ tests/
+
+  # ----------------------------------------
+  # Docs
+  # ----------------------------------------
+  docs:serve:
+    desc: Serve documentation locally on port 8000
+    cmds:
+      - |
+        command -v python3 > /dev/null 2>&1 \
+          && python3 -m http.server 8000 --directory docs/ \
+          || echo "python3 not available. Docs are in docs/"
+
+  # ----------------------------------------
+  # Cleanup
+  # ----------------------------------------
+  clean:
+    desc: Remove Python cache and temp files
+    cmds:
+      - find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+      - find . -type f -name "*.pyc" -delete 2>/dev/null || true
+      - find . -type d -name "*.egg-info" -exec rm -rf {} + 2>/dev/null || true
+      - find . -type d -name ".pytest_cache" -exec rm -rf {} + 2>/dev/null || true
+      - find . -type d -name ".mypy_cache" -exec rm -rf {} + 2>/dev/null || true
+      - rm -f logs/*.log 2>/dev/null || true
+      - echo "Clean complete."
+
+  clean:all:
+    desc: "Full cleanup — stops services and removes all data (destructive)"
+    cmds:
+      - |
+        read -p "This removes all data and volumes. Continue? [y/N] " confirm
+        if [[ $confirm == [yY] ]]; then
+          docker compose -f {{.COMPOSE_SINGLE_FILE}} down -v 2>/dev/null || true
+          docker compose -f {{.COMPOSE_FILE}} down -v 2>/dev/null || true
+          task clean
+          rm -rf {{.DATA_DIR}}/*
+          echo "Full cleanup complete."
+        else
+          echo "Cancelled."
+        fi

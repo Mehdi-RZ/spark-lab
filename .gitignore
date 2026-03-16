@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+
+# Environment
+.env
+
+# Data (generated)
+data/
+
+# Logs
+logs/
+# - Spark event logs (eventlog_v2_*)
+# - Application logs (app-logs/YYYY-MM-DD/*.log)
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Ruff
+.ruff_cache/
+
+# OS
+.DS_Store
+Thumbs.db
+
+LEARNING.md
+needs.txt
+docs/

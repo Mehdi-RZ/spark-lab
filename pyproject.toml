@@ -1,0 +1,51 @@
+[project]
+name = "spark-lab"
+version = "0.1.0"
+description = "Containerized Spark testing and learning environment"
+requires-python = ">=3.9"
+
+[dependency-groups]
+dev = [
+    "ruff>=0.4.0",
+    "mypy>=1.9.0",
+]
+
+[tool.ruff]
+# Target Python version (matches the Spark Docker image)
+target-version = "py39"
+
+# Directories to lint
+include = ["utils/**/*.py", "examples/**/*.py", "tests/**/*.py"]
+
+# Maximum line length — 100 gives a bit more room than the PEP 8 default
+# while still being readable on most displays.
+line-length = 100
+
+[tool.ruff.lint]
+# Rule sets enabled:
+#   E / W  — pycodestyle errors and warnings
+#   F      — pyflakes (undefined names, unused imports, etc.)
+#   I      — isort (import ordering)
+#   UP     — pyupgrade (modernise Python syntax)
+#   B      — flake8-bugbear (common footguns)
+#   C4     — flake8-comprehensions (unnecessary list/dict/set constructs)
+#   SIM    — flake8-simplify (simplifiable conditionals, etc.)
+select = ["E", "W", "F", "I", "UP", "B", "C4", "SIM"]
+
+ignore = [
+    # Allow long lines in docstrings / comments
+    "E501",
+    # Allow f-strings in logging calls (we do this intentionally in some places)
+    "G004",
+    # sys.path manipulation is intentional — all scripts run inside Docker
+    "E402",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Examples are learning scripts; allow a few style relaxations
+"examples/**" = [
+    "T201",   # print() calls are fine in examples
+    "B007",   # unused loop variable in demonstration loops
+]
+# Tests also use print() for test output
+"tests/**" = ["T201"]
