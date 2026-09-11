@@ -1,16 +1,26 @@
 services:
   spark-single:
-    image: apache/spark:${SPARK_VERSION}
+    build:
+      context: .
+      dockerfile: Dockerfile.spark
+      args:
+        SPARK_VERSION: ${SPARK_VERSION}
+    image: spark-lab-spark
     user: "0:0"
     container_name: spark-single
     hostname: spark-single
     ports:
-      - "${SPARK_MASTER_UI_PORT}:${SPARK_MASTER_UI_PORT}"
       - "4040:4040"
+      - "${SPARK_CONNECT_PORT}:${SPARK_CONNECT_PORT}"
     environment:
       - SPARK_MASTER_HOST=single
-      - SPARK_MODE=single
+      - SPARK_CONNECT_PORT=${SPARK_CONNECT_PORT}
       - PYTHONPATH=/opt/spark
+    command: >
+      /bin/bash -c "
+      /opt/spark/sbin/start-connect-server.sh
+      && tail -f /dev/null
+      "
     volumes:
       - ../examples:/opt/spark/apps
       - ../data:/opt/spark/data
@@ -18,21 +28,25 @@ services:
       - ../utils:/opt/spark/utils
       - ../logs:/opt/spark/logs
       - ../tests:/opt/spark/tests
-    command: /bin/bash -c "tail -f /dev/null"
 
   jupyter:
-    image: jupyter/pyspark-notebook:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.jupyter
+    image: spark-lab-jupyter
     container_name: jupyter
     hostname: jupyter
     ports:
       - "${JUPYTER_PORT}:${JUPYTER_PORT}"
     environment:
-      - SPARK_MODE=single
       - JUPYTER_TOKEN=${JUPYTER_TOKEN}
+      - SPARK_CONNECT_HOST=spark-single
+      - SPARK_CONNECT_PORT=${SPARK_CONNECT_PORT}
     volumes:
       - ../notebooks:/home/jovyan/notebooks
       - ../examples:/home/jovyan/apps
-      - ../data:/home/jovyan/data
+      - ../data:/opt/spark/data
+      - ../utils:/opt/spark/utils
 
   spark-history:
     image: apache/spark:${SPARK_VERSION}
@@ -40,9 +54,7 @@ services:
     container_name: spark-history
     hostname: spark-history
     ports:
-      - "18080:18080"
-    environment:
-      - SPARK_HISTORY_UI_PORT=18080
+      - "${SPARK_HISTORY_PORT}:${SPARK_HISTORY_PORT}"
     volumes:
       - ../logs:/opt/spark/logs
       - ../config:/opt/spark/conf

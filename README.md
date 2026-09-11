@@ -44,10 +44,29 @@ task jupyter:open
 
 URL: http://localhost:8888 | Token: `spark-lab-token`
 
+Notebooks are **Spark Connect clients** — they run no Spark themselves.
+All computation happens on the Spark cluster (single-node or multi-node),
+and jobs show up in the Spark UI exactly like `spark-submit` jobs.
+
 ```python
+import sys
+sys.path.insert(0, "/opt/spark")
+
+from utils.connect_session import get_connect_url
 from pyspark.sql import SparkSession
-spark = SparkSession.builder.remote("sc://localhost:15002").appName("MyApp").getOrCreate()
+
+spark = (
+    SparkSession.builder
+    .appName("My-Notebook")
+    .remote(get_connect_url())   # e.g. sc://spark-master:15002
+    .getOrCreate()
+)
 ```
+
+Notes:
+- Data paths resolve **server-side** — always use `/opt/spark/data/...`
+- `spark.stop()` only closes the client connection; the Connect server keeps running
+- The client `pyspark` version must match the cluster's `SPARK_VERSION` (enforced by `docker/Dockerfile.jupyter`)
 
 ## Commands
 
@@ -68,6 +87,7 @@ Edit `.env`:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `SPARK_VERSION` | 3.5.5 | Spark version |
+| `SPARK_CONNECT_PORT` | 15002 | Spark Connect server port (notebooks connect here) |
 | `SPARK_WORKER_MEMORY` | 2g | Worker memory |
 | `SPARK_WORKER_CORES` | 2 | Worker cores |
 | `JUPYTER_TOKEN` | spark-lab-token | Jupyter token |

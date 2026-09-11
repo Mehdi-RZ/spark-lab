@@ -1,0 +1,21 @@
+# ============================================================================
+# Jupyter client image for Spark Lab
+# ============================================================================
+# This is a THIN Spark Connect client image — it contains NO Spark runtime
+# and NO JVM. Notebooks connect to the Spark cluster via Spark Connect
+# (sc://<host>:<port>), so the client pyspark version must match the
+# cluster's SPARK_VERSION exactly (3.5.5).
+#
+# Base image choice:
+#   quay.io/jupyter/scipy-notebook:2025-08-11
+#   - The live registry for docker-stacks (Docker Hub mirrors are stale)
+#   - This dated tag ships Python 3.12, which is the newest Python
+#     officially supported by PySpark 3.5.x (3.13 requires Spark 4.x)
+#   - Includes pandas / numpy / matplotlib for the lab notebooks
+# ============================================================================
+
+FROM quay.io/jupyter/scipy-notebook:2025-08-11
+
+# Spark Connect client library — must match SPARK_VERSION of the cluster.
+# The [connect] extra installs grpcio and other client dependencies.
+RUN pip install --no-cache-dir "pyspark[connect]==3.5.5"

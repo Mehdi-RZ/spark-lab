@@ -1,0 +1,25 @@
+# ============================================================================
+# Spark image with Spark Connect server support baked in
+# ============================================================================
+# The official apache/spark image does NOT bundle the Spark Connect server
+# jar (that's why `start-connect-server.sh` fails with "Failed to load class
+# org.apache.spark.sql.connect.service.SparkConnectServer").
+#
+# We add the connect jar to /opt/spark/jars so that BOTH the driver
+# (Connect server) and the executors load the same classes from JVM start —
+# passing --packages instead only puts the jar on the driver and causes
+# "ClassCastException: cannot assign instance of java.lang.invoke.SerializedLambda"
+# on executors.
+#
+# Scala version note: apache/spark 3.x images are built with Scala 2.12,
+# hence the _2.12 artifact.
+# ============================================================================
+
+ARG SPARK_VERSION=3.5.5
+FROM apache/spark:${SPARK_VERSION}
+# Re-declare after FROM — pre-FROM ARGs are out of scope inside the build
+ARG SPARK_VERSION=3.5.5
+
+RUN curl -fsSL \
+      "https://repo1.maven.org/maven2/org/apache/spark/spark-connect_2.12/${SPARK_VERSION}/spark-connect_2.12-${SPARK_VERSION}.jar" \
+      -o "/opt/spark/jars/spark-connect_2.12-${SPARK_VERSION}.jar"

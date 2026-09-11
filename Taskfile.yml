@@ -6,12 +6,10 @@ output: prefixed
 silent: false
 
 vars:
-  PROJECT_NAME: spark-lab
   COMPOSE_FILE: docker/docker-compose.yml
   COMPOSE_SINGLE_FILE: docker/docker-compose.single.yml
   EXAMPLES_DIR: ./examples
   DATA_DIR: ./data
-  TESTS_DIR: ./tests
 
 env:
   DOCKER_BUILDKIT: '1'
@@ -75,19 +73,26 @@ tasks:
       - docker compose -f {{.COMPOSE_FILE}} pull
       - docker compose -f {{.COMPOSE_SINGLE_FILE}} pull
 
+  config:render:
+    desc: "Render spark-defaults.conf from .env (single source of truth for resources)"
+    cmds:
+      - ./scripts/render-config.sh
+
   # ----------------------------------------
   # Single-node mode
   # ----------------------------------------
   single:start:
     desc: "Start single-node mode (Spark UI: localhost:4040, Jupyter: localhost:8888)"
-    deps: [setup:dirs]
+    deps: [setup:dirs, config:render]
     cmds:
+      - docker compose -f {{.COMPOSE_SINGLE_FILE}} up -d --build jupyter
       - docker compose -f {{.COMPOSE_SINGLE_FILE}} up -d
       - task: single:wait
       - |
         echo "Single-node started."
-        echo "  Spark UI: http://localhost:4040"
-        echo "  Jupyter:  http://localhost:8888 (token: ${JUPYTER_TOKEN})"
+        echo "  Spark UI:       http://localhost:4040"
+        echo "  Spark Connect:  sc://localhost:{{.SPARK_CONNECT_PORT}} (used by notebooks)"
+        echo "  Jupyter:        http://localhost:{{.JUPYTER_PORT}} (token: ${JUPYTER_TOKEN})"
 
   single:stop:
     desc: Stop single-node mode
@@ -98,66 +103,64 @@ tasks:
     internal: true
     cmds:
       - |
-        echo "Waiting for Spark..."
-        timeout=30
+        echo "Waiting for Spark (incl. Spark Connect server)..."
+        timeout=120
         while [ $timeout -gt 0 ]; do
           if docker ps --format '{{`{{.Names}}`}}' | grep -q "spark-single"; then
             if docker exec spark-single /opt/spark/bin/spark-submit --version > /dev/null 2>&1; then
-              echo "Spark is ready."
-              exit 0
+              if timeout 2 bash -c "(echo > /dev/tcp/127.0.0.1/{{.SPARK_CONNECT_PORT}})" 2>/dev/null; then
+                echo "Spark and Spark Connect are ready."
+                exit 0
+              fi
             fi
           fi
           sleep 2
           timeout=$((timeout - 2))
         done
-        echo "ERROR: Timed out waiting for Spark"
+        echo "ERROR: Timed out waiting for Spark / Spark Connect"
         exit 1
 
   # ----------------------------------------
   # Cluster mode
   # ----------------------------------------
   cluster:start:
-    desc: "Start cluster mode (Master UI: localhost:8080, workers: 8081/8082)"
-    deps: [setup:dirs]
+    desc: "Start cluster mode (Master UI: localhost:{{.SPARK_MASTER_WEBUI_PORT}}, workers: {{.SPARK_WORKER_1_UI_PORT}}/{{.SPARK_WORKER_2_UI_PORT}})"
+    deps: [setup:dirs, config:render]
     cmds:
+      - docker compose -f {{.COMPOSE_FILE}} up -d --build jupyter
       - docker compose -f {{.COMPOSE_FILE}} up -d
       - task: cluster:wait
       - |
         echo "Cluster started."
-        echo "  Master UI: http://localhost:8080"
-        echo "  Worker 1:  http://localhost:8081"
-        echo "  Worker 2:  http://localhost:8082"
-        echo "  Jupyter:   http://localhost:8888 (token: ${JUPYTER_TOKEN})"
+        echo "  Master UI:      http://localhost:{{.SPARK_MASTER_WEBUI_PORT}}"
+        echo "  Worker 1:       http://localhost:{{.SPARK_WORKER_1_UI_PORT}}"
+        echo "  Worker 2:       http://localhost:{{.SPARK_WORKER_2_UI_PORT}}"
+        echo "  Spark Connect:  sc://localhost:{{.SPARK_CONNECT_PORT}} (used by notebooks)"
+        echo "  Jupyter:        http://localhost:{{.JUPYTER_PORT}} (token: ${JUPYTER_TOKEN})"
 
   cluster:stop:
     desc: Stop cluster mode
     cmds:
       - docker compose -f {{.COMPOSE_FILE}} down
 
-  cluster:scale:
-    desc: "Scale worker nodes (usage: task cluster:scale WORKERS=3)"
-    vars:
-      WORKERS: '{{.WORKERS | default "2"}}'
-    cmds:
-      - docker compose -f {{.COMPOSE_FILE}} up -d --scale spark-worker={{.WORKERS}}
-      - echo "Scaled to {{.WORKERS}} workers."
-
   cluster:wait:
     internal: true
     cmds:
       - |
-        echo "Waiting for Spark Master..."
-        timeout=60
+        echo "Waiting for Spark Master + Spark Connect server..."
+        timeout=120
         while [ $timeout -gt 0 ]; do
-          if curl -s http://localhost:8080/json/ 2>/dev/null | grep -q '"status":"ALIVE"'; then
-            echo "Spark Master is ready."
-            sleep 3
-            exit 0
+          if curl -s http://localhost:{{.SPARK_MASTER_WEBUI_PORT}}/json/ 2>/dev/null | grep -qE '"status"[[:space:]]*:[[:space:]]*"ALIVE"'; then
+            if timeout 2 bash -c "(echo > /dev/tcp/127.0.0.1/{{.SPARK_CONNECT_PORT}})" 2>/dev/null; then
+              echo "Spark Master and Spark Connect are ready."
+              sleep 3
+              exit 0
+            fi
           fi
           sleep 2
           timeout=$((timeout - 2))
         done
-        echo "ERROR: Timed out waiting for Spark Master"
+        echo "ERROR: Timed out waiting for Spark Master / Spark Connect"
         exit 1
 
   # ----------------------------------------
@@ -183,7 +186,7 @@ tasks:
         echo ""
 
         echo "Spark Master:"
-        if curl -s http://localhost:8080/json/ 2>/dev/null > /tmp/spark_status.json; then
+        if curl -s http://localhost:{{.SPARK_MASTER_WEBUI_PORT}}/json/ 2>/dev/null > /tmp/spark_status.json; then
           python3 -c "
         import sys, json
         d = json.load(open('/tmp/spark_status.json'))
@@ -204,7 +207,7 @@ tasks:
 
         echo "History Server:"
         if docker ps --format '{{`{{.Names}}`}}' | grep -q "spark-history"; then
-          echo "  Running — http://localhost:18080"
+          echo "  Running — http://localhost:{{.SPARK_HISTORY_PORT}}"
         else
           echo "  Not running (task history:start)"
         fi
@@ -361,9 +364,11 @@ tasks:
           local size="$1"
           echo "Generating: $size"
           if docker ps --format "$DFMT" | grep -q "spark-single"; then
-            docker exec spark-single python3 /opt/spark/apps/generate_data.py --size "$size"
+            docker exec spark-single /opt/spark/bin/spark-submit \
+              --master local[*] \
+              /opt/spark/apps/generate_data.py --size "$size"
           else
-            docker exec spark-master spark-submit \
+            docker exec spark-master /opt/spark/bin/spark-submit \
               --master spark://spark-master:7077 \
               /opt/spark/apps/generate_data.py --size "$size"
           fi
@@ -459,11 +464,11 @@ tasks:
   # History Server
   # ----------------------------------------
   history:start:
-    desc: "Start Spark History Server (UI: localhost:18080)"
+    desc: "Start Spark History Server (UI: localhost:{{.SPARK_HISTORY_PORT}})"
     cmds:
       - |
         if docker ps --format '{{`{{.Names}}`}}' | grep -q "spark-history"; then
-          echo "Already running — http://localhost:18080"
+          echo "Already running — http://localhost:{{.SPARK_HISTORY_PORT}}"
           exit 0
         fi
         DFMT='{{`{{.Names}}`}}'
@@ -475,7 +480,7 @@ tasks:
           echo "ERROR: No Spark environment running. Run: task single:start"
           exit 1
         fi
-        echo "History Server started — http://localhost:18080"
+        echo "History Server started — http://localhost:{{.SPARK_HISTORY_PORT}}"
 
   history:stop:
     desc: Stop Spark History Server
@@ -487,7 +492,7 @@ tasks:
     desc: Open Spark History Server in browser
     cmds:
       - |
-        URL="http://localhost:18080"
+        URL="http://localhost:{{.SPARK_HISTORY_PORT}}"
         if command -v xdg-open > /dev/null 2>&1; then xdg-open "$URL"
         elif command -v open > /dev/null 2>&1; then open "$URL"
         else python3 -m webbrowser "$URL" 2>/dev/null || echo "Open manually: $URL"
@@ -509,13 +514,13 @@ tasks:
   # ----------------------------------------
   # Docs
   # ----------------------------------------
-  docs:serve:
-    desc: Serve documentation locally on port 8000
-    cmds:
-      - |
-        command -v python3 > /dev/null 2>&1 \
-          && python3 -m http.server 8000 --directory docs/ \
-          || echo "python3 not available. Docs are in docs/"
+  # docs:serve:
+  #   desc: Serve documentation locally on port 8000
+  #   cmds:
+  #     - |
+  #       command -v python3 > /dev/null 2>&1 \
+  #         && python3 -m http.server 8000 --directory docs/ \
+  #         || echo "python3 not available. Docs are in docs/"
 
   # ----------------------------------------
   # Cleanup

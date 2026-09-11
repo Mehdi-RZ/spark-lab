@@ -65,17 +65,7 @@ export SPARK_MASTER_PORT=${SPARK_MASTER_PORT:-7077}
 #         Conflicts with common web ports (may need to change)
 # PROD:   Often behind reverse proxy. May use different port
 #         Common alternatives: 18080, 8081, etc.
-export SPARK_MASTER_UI_PORT=${SPARK_MASTER_UI_PORT:-8080}
-
-# WHAT:   Port for Spark Connect server (modern client protocol)
-# WHY:    15002 is a non-conflicting port for Spark Connect
-# HOW:    Spark Connect allows thin clients to connect to remote Spark
-#         More efficient than traditional spark-submit for interactive use
-# IMPACT: Enables modern Spark Connect protocol
-#         Required for some IDE integrations and remote clients
-# PROD:   Becoming more common. Port choice depends on environment
-#         Default is often 15002
-export SPARK_CONNECT_PORT=${SPARK_CONNECT_PORT:-15002}
+export SPARK_MASTER_WEBUI_PORT=${SPARK_MASTER_WEBUI_PORT:-8080}
 
 
 # ============================================================================
@@ -132,7 +122,7 @@ export SPARK_WORKER_PORT=${SPARK_WORKER_PORT:-8881}
 #         Must be exposed in docker-compose for external access
 # PROD:   Often not exposed externally
 #         Accessed via SSH tunnel or internal network only
-export SPARK_WORKER_UI_PORT=${SPARK_WORKER_UI_PORT:-8081}
+export SPARK_WORKER_WEBUI_PORT=${SPARK_WORKER_WEBUI_PORT:-8081}
 
 
 # ============================================================================

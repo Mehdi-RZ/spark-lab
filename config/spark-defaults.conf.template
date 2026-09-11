@@ -57,7 +57,7 @@ spark.app.name                          Spark-Lab
 #         Too high = Wastes memory that could go to executors
 # PROD:   Typically 4-16GB depending on broadcast sizes and collect() usage
 #         Rule of thumb: broadcast_data_size * 2 + 2GB baseline
-spark.driver.memory                     2g
+spark.driver.memory                     ${SPARK_DRIVER_MEMORY}
 
 # WHAT:   Off-heap memory for JVM overhead (metaspace, threads, native libs)
 # WHY:    512MB provides buffer for JVM internals beyond heap
@@ -66,7 +66,7 @@ spark.driver.memory                     2g
 # IMPACT: Too low = Container killed by OS/YARN for exceeding memory
 #         Too high = Wastes cluster resources
 # PROD:   Usually 10-20% of driver.memory, minimum 384MB
-spark.driver.memoryOverhead             512m
+spark.driver.memoryOverhead             ${SPARK_DRIVER_MEMORY_OVERHEAD}
 
 
 # ============================================================================
@@ -92,7 +92,7 @@ spark.driver.memoryOverhead             512m
 #         Too high = Longer GC pauses, fewer executors per node
 # PROD:   Typically 4-16GB. Sweet spot often 4-8GB for balanced GC
 #         Avoid >32GB (can't use compressed object pointers)
-spark.executor.memory                   2g
+spark.executor.memory                   ${SPARK_EXECUTOR_MEMORY}
 
 # WHAT:   Off-heap memory overhead per executor
 # WHY:    512MB covers JVM internals, Python/PySpark interop overhead
@@ -102,7 +102,7 @@ spark.executor.memory                   2g
 #         Too high = Reduces memory available for actual processing
 # PROD:   10-20% of executor.memory. Increase for PySpark workloads
 #         PySpark creates separate Python processes that need extra memory
-spark.executor.memoryOverhead           512m
+spark.executor.memoryOverhead           ${SPARK_EXECUTOR_MEMORY_OVERHEAD}
 
 
 # ============================================================================
@@ -122,7 +122,7 @@ spark.executor.memoryOverhead           512m
 #         Fewer cores = less parallelism but simpler memory management
 # PROD:   Typically 4-5 cores per executor (leaves room for OS/HDFS)
 #         Rule: nodes have N cores, use executors with 4-5 cores each
-spark.executor.cores                    2
+spark.executor.cores                    ${SPARK_EXECUTOR_CORES}
 
 # WHAT:   Default number of partitions for RDD transformations (e.g., reduceByKey)
 # WHY:    4 partitions works well with 2-core executors in lab environment
@@ -132,7 +132,7 @@ spark.executor.cores                    2
 #         Too high = Excessive scheduling overhead, small files
 # PROD:   Typically 200-2000 depending on data size and cluster size
 #         Start with 2-3x total executor cores, tune based on task duration
-spark.default.parallelism               4
+spark.default.parallelism               ${SPARK_DEFAULT_PARALLELISM}
 
 
 # ============================================================================
@@ -320,7 +320,7 @@ spark.history.fs.logDirectory           /opt/spark/logs
 # IMPACT: Lower = More responsive but more I/O
 #         Higher = Less responsive but less I/O
 # PROD:   10-30 seconds is typical
-spark.history.fs.updateInterval         10s
+spark.history.fs.update.interval        10s
 
 # WHAT:   Port for History Server web UI
 # WHY:    18080 is Spark's default History Server port

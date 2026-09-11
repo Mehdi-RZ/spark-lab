@@ -9,6 +9,9 @@ build/
 # Environment
 .env
 
+# Generated Spark config (rendered from config/spark-defaults.conf.template)
+config/spark-defaults.conf
+
 # Data (generated)
 data/
 
